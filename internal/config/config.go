@@ -7,11 +7,12 @@ import "time"
 // API URLs and endpoints
 const (
 	GCPReleaseNotesURL          = "https://cloud.google.com/feeds/gcp-release-notes.xml"
+	GCPSecurityBulletinsURL     = "https://cloud.google.com/feeds/google-cloud-security-bulletins.xml"
 	GoReleasesURL               = "https://api.github.com/repos/golang/go/releases"
 	TerraformReleasesURL        = "https://api.github.com/repos/hashicorp/terraform/releases"
 	AWSSecurityBulletinsURL     = "https://aws.amazon.com/security/security-bulletins/rss/feed/"
-	DebianSecurityURL           = "https://www.debian.org/security/dsa-long"
 	CloudflareSecurityBlogURL   = "https://blog.cloudflare.com/tag/security/rss/"
+	DebianSecurityURL           = "https://www.debian.org/security/dsa-long"
 	NVDCVEURL                   = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 	GitHubSecurityAdvisoriesURL = "https://api.github.com/advisories"
 )
