@@ -18,11 +18,11 @@ import (
 
 // Cloudflare checks for Cloudflare Security Blog updates
 type Cloudflare struct {
-	notifier *notifier.SlackNotifier
+	notifier notifier.Notifier
 }
 
 // NewCloudflare creates a new Cloudflare checker
-func NewCloudflare(n *notifier.SlackNotifier) *Cloudflare {
+func NewCloudflare(n notifier.Notifier) *Cloudflare {
 	return &Cloudflare{notifier: n}
 }
 

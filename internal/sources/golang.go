@@ -16,12 +16,12 @@ import (
 
 // Go checks for Go releases updates
 type Go struct {
-	notifier *notifier.SlackNotifier
+	notifier notifier.Notifier
 	token    string
 }
 
 // NewGo creates a new Go checker
-func NewGo(n *notifier.SlackNotifier, token string) *Go {
+func NewGo(n notifier.Notifier, token string) *Go {
 	return &Go{
 		notifier: n,
 		token:    token,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -15,20 +16,28 @@ import (
 
 // App represents the main application
 type App struct {
-	notifier         *notifier.SlackNotifier
-	securityNotifier *notifier.SlackNotifier
+	notifier         notifier.Notifier
+	securityNotifier notifier.Notifier
 	checkers         []checker.Named
+	jsonMode         bool
 }
 
 // NewApp creates a new App instance
-func NewApp(webhookURL, securityWebhookURL, githubToken string) *App {
-	n := notifier.New(webhookURL)
+func NewApp(webhookURL, securityWebhookURL, githubToken string, jsonMode bool) *App {
+	var n, securityN notifier.Notifier
 
-	// Use dedicated security webhook if provided, otherwise use the same notifier
-	securityN := n
-	if securityWebhookURL != "" && securityWebhookURL != webhookURL {
-		securityN = notifier.New(securityWebhookURL)
-		log.Println("Using dedicated security notification channel")
+	if jsonMode {
+		// JSON mode: output to stdout
+		n = notifier.NewJSON()
+		securityN = n
+	} else {
+		// Slack mode: send to webhook
+		n = notifier.New(webhookURL)
+		securityN = n
+		if securityWebhookURL != "" && securityWebhookURL != webhookURL {
+			securityN = notifier.New(securityWebhookURL)
+			log.Println("Using dedicated security notification channel")
+		}
 	}
 
 	// Checkers are executed in order
@@ -48,12 +57,15 @@ func NewApp(webhookURL, securityWebhookURL, githubToken string) *App {
 		notifier:         n,
 		securityNotifier: securityN,
 		checkers:         checkers,
+		jsonMode:         jsonMode,
 	}
 }
 
 // Run executes all update checks
 func (a *App) Run(ctx context.Context) error {
-	log.Println("Starting update watcher...")
+	if !a.jsonMode {
+		log.Println("Starting update watcher...")
+	}
 
 	var errors []string
 	hasUpdates := false
@@ -62,11 +74,18 @@ func (a *App) Run(ctx context.Context) error {
 	for _, nc := range a.checkers {
 		updated, err := nc.Checker.Check(ctx)
 		if err != nil {
-			log.Printf("Error checking %s: %v", nc.Name, err)
+			if !a.jsonMode {
+				log.Printf("Error checking %s: %v", nc.Name, err)
+			}
 			errors = append(errors, fmt.Sprintf("❌ %s: %v", nc.Name, err))
 		} else if updated {
 			hasUpdates = true
 		}
+	}
+
+	// In JSON mode, skip summary notification
+	if a.jsonMode {
+		return nil
 	}
 
 	// Send summary notification
@@ -98,11 +117,21 @@ func (a *App) sendSummary(ctx context.Context, errors []string, hasUpdates bool)
 }
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	// Parse command line flags
+	jsonMode := flag.Bool("json", false, "Output results as JSON to stdout instead of Slack")
+	flag.Parse()
+
+	// Set up logging (suppress in JSON mode to keep stdout clean)
+	if !*jsonMode {
+		log.SetFlags(log.LstdFlags | log.Lshortfile)
+	} else {
+		log.SetOutput(os.Stderr)
+		log.SetFlags(0)
+	}
 
 	// Validate environment variables
 	webhookURL := os.Getenv("SLACK_WEBHOOK_URL")
-	if webhookURL == "" {
+	if webhookURL == "" && !*jsonMode {
 		log.Fatal("SLACK_WEBHOOK_URL environment variable is not set")
 	}
 
@@ -112,9 +141,14 @@ func main() {
 
 	// Create and run application
 	ctx := context.Background()
-	app := NewApp(webhookURL, securityWebhookURL, githubToken)
+	app := NewApp(webhookURL, securityWebhookURL, githubToken, *jsonMode)
 
 	if err := app.Run(ctx); err != nil {
-		log.Fatalf("Application failed: %v", err)
+		if *jsonMode {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		} else {
+			log.Fatalf("Application failed: %v", err)
+		}
+		os.Exit(1)
 	}
 }

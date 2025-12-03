@@ -16,11 +16,11 @@ import (
 
 // Debian checks for Debian security advisories
 type Debian struct {
-	notifier *notifier.SlackNotifier
+	notifier notifier.Notifier
 }
 
 // NewDebian creates a new Debian checker
-func NewDebian(n *notifier.SlackNotifier) *Debian {
+func NewDebian(n notifier.Notifier) *Debian {
 	return &Debian{notifier: n}
 }
 

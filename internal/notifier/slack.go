@@ -1,5 +1,3 @@
-// Package notifier provides notification functionality for sending
-// messages to external services such as Slack.
 package notifier
 
 import (
@@ -22,9 +20,14 @@ type SlackNotifier struct {
 	webhookURL string
 }
 
-// New creates a new SlackNotifier
-func New(webhookURL string) *SlackNotifier {
+// NewSlack creates a new SlackNotifier
+func NewSlack(webhookURL string) *SlackNotifier {
 	return &SlackNotifier{webhookURL: webhookURL}
+}
+
+// New creates a new SlackNotifier (alias for backward compatibility)
+func New(webhookURL string) *SlackNotifier {
+	return NewSlack(webhookURL)
 }
 
 // Notify sends a message to Slack
@@ -51,4 +54,15 @@ func (s *SlackNotifier) Notify(ctx context.Context, message string) error {
 	}
 
 	return nil
+}
+
+// NotifyUpdate sends structured update information to Slack
+// For Slack, we just format it as a message
+func (s *SlackNotifier) NotifyUpdate(ctx context.Context, info UpdateInfo) error {
+	message := fmt.Sprintf("*%s*", info.Title)
+	if info.Version != "" {
+		message += fmt.Sprintf(" (v%s)", info.Version)
+	}
+	message += fmt.Sprintf("\n%s\n<%s|詳細を見る>", info.Summary, info.URL)
+	return s.Notify(ctx, message)
 }

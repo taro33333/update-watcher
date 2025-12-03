@@ -19,11 +19,11 @@ import (
 
 // GCPSecurity checks for GCP Security Bulletins
 type GCPSecurity struct {
-	notifier *notifier.SlackNotifier
+	notifier notifier.Notifier
 }
 
 // NewGCPSecurity creates a new GCP Security checker
-func NewGCPSecurity(n *notifier.SlackNotifier) *GCPSecurity {
+func NewGCPSecurity(n notifier.Notifier) *GCPSecurity {
 	return &GCPSecurity{notifier: n}
 }
 

@@ -61,49 +61,100 @@ jobs:
           rate_limit_per_second: 10
           EOF
 
-      # update-watcher の出力を smart-digest で処理
-      - name: Run update watcher with smart-digest
+      # update-watcher を JSON モードで実行
+      - name: Run update-watcher with JSON output
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # update-watcher を --json モードで実行
+          go run main.go --json > /tmp/urls.json 2>/tmp/watcher-error.log || true
+
+          if [ -s /tmp/watcher-error.log ]; then
+            echo "=== Update Watcher Logs ==="
+            cat /tmp/watcher-error.log
+          fi
+
+          echo "=== Update Watcher JSON Output ==="
+          cat /tmp/urls.json || echo "No output"
+
+          # URLの数をカウント
+          URL_COUNT=$(wc -l < /tmp/urls.json 2>/dev/null || echo "0")
+          echo "Found $URL_COUNT URLs"
+
+      # smart-digest で分析
+      - name: Analyze with smart-digest
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_SECURITY_WEBHOOK_URL: ${{ secrets.SLACK_SECURITY_WEBHOOK_URL }}
         run: |
-          # update-watcher の出力を smart-digest にパイプ
-          go run main.go --json | \
-            /tmp/smart-digest-bin --config /tmp/smart-digest-config.yaml \
-            > /tmp/digest.md
+          # URLが抽出できたかチェック
+          if [ ! -f /tmp/urls.json ] || [ ! -s /tmp/urls.json ]; then
+            echo "今日は新しい更新がありませんでした。" > /tmp/digest.md
+            echo "=== No URLs to analyze ==="
+            exit 0
+          fi
 
-      # 結果がある場合のみ Slack に投稿
+          # URLの数をカウント
+          URL_COUNT=$(wc -l < /tmp/urls.json)
+          echo "=== Analyzing $URL_COUNT URLs with smart-digest ==="
+
+          # smart-digest で分析
+          cat /tmp/urls.json | \
+            /tmp/smart-digest-bin \
+              --config /tmp/smart-digest-config.yaml \
+              --verbose \
+              > /tmp/digest.md 2>/tmp/digest-error.log || true
+
+          echo "=== Smart Digest Output ==="
+          head -100 /tmp/digest.md || echo "No output"
+
+          if [ -s /tmp/digest-error.log ]; then
+            echo "=== Smart Digest Errors ==="
+            cat /tmp/digest-error.log
+          fi
+
+      # 結果を Slack に投稿
       - name: Post to Slack
         if: success()
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ ! -f /tmp/digest.md ] || [ ! -s /tmp/digest.md ]; then
+            echo "No digest to post"
+            exit 0
+          fi
+
           DIGEST=$(cat /tmp/digest.md)
 
-          # 結果がある場合のみ投稿
-          if [ -n "$DIGEST" ] && [ "$DIGEST" != "該当する記事はありませんでした。" ]; then
-            # Markdown を JSON エスケープ
-            ESCAPED=$(echo "$DIGEST" | jq -Rs .)
-
+          # 該当記事なしチェック
+          if echo "$DIGEST" | grep -q "該当する記事はありませんでした\|新しい更新がありませんでした"; then
             curl -X POST "$SLACK_WEBHOOK_URL" \
               -H 'Content-Type: application/json' \
-              -d "{
-                \"text\": \"📬 今日の重要な更新 (AI分析済み)\",
-                \"blocks\": [
-                  {
-                    \"type\": \"section\",
-                    \"text\": {
-                      \"type\": \"mrkdwn\",
-                      \"text\": $ESCAPED
-                    }
-                  }
-                ]
-              }"
-          else
-            echo "今日は重要な更新なし（閾値: 75点以上）"
+              -d '{"text":"📭 今日の重要な更新はありません（閾値: 75点以上）"}'
+            exit 0
           fi
+
+          # Markdown を JSON エスケープ（Slack の文字数制限を考慮）
+          DIGEST_TRUNCATED=$(echo "$DIGEST" | head -c 2900)
+          if [ ${#DIGEST} -gt 2900 ]; then
+            DIGEST_TRUNCATED="$DIGEST_TRUNCATED\n\n_... (省略)_"
+          fi
+
+          ESCAPED=$(echo "$DIGEST_TRUNCATED" | jq -Rs .)
+
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"text\": \"📬 今日の重要な更新 (AI分析済み)\",
+              \"blocks\": [
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": $ESCAPED
+                  }
+                }
+              ]
+            }"
 
       - name: Notify on failure
         if: failure()

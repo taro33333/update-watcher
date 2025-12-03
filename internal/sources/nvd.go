@@ -21,11 +21,11 @@ import (
 
 // NVD checks for NVD CVE updates
 type NVD struct {
-	notifier *notifier.SlackNotifier
+	notifier notifier.Notifier
 }
 
 // NewNVD creates a new NVD checker
-func NewNVD(n *notifier.SlackNotifier) *NVD {
+func NewNVD(n notifier.Notifier) *NVD {
 	return &NVD{notifier: n}
 }
 

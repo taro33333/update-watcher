@@ -18,11 +18,11 @@ import (
 
 // GCP checks for GCP release notes updates
 type GCP struct {
-	notifier *notifier.SlackNotifier
+	notifier notifier.Notifier
 }
 
 // NewGCP creates a new GCP checker
-func NewGCP(n *notifier.SlackNotifier) *GCP {
+func NewGCP(n notifier.Notifier) *GCP {
 	return &GCP{notifier: n}
 }
 

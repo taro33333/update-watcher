@@ -16,12 +16,12 @@ import (
 
 // Terraform checks for Terraform releases
 type Terraform struct {
-	notifier *notifier.SlackNotifier
+	notifier notifier.Notifier
 	token    string
 }
 
 // NewTerraform creates a new Terraform checker
-func NewTerraform(n *notifier.SlackNotifier, token string) *Terraform {
+func NewTerraform(n notifier.Notifier, token string) *Terraform {
 	return &Terraform{
 		notifier: n,
 		token:    token,

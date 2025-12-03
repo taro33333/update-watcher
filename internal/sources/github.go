@@ -16,12 +16,12 @@ import (
 
 // GitHub checks for GitHub Security Advisories
 type GitHub struct {
-	notifier *notifier.SlackNotifier
+	notifier notifier.Notifier
 	token    string
 }
 
 // NewGitHub creates a new GitHub checker
-func NewGitHub(n *notifier.SlackNotifier, token string) *GitHub {
+func NewGitHub(n notifier.Notifier, token string) *GitHub {
 	return &GitHub{
 		notifier: n,
 		token:    token,

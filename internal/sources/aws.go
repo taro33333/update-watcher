@@ -18,11 +18,11 @@ import (
 
 // AWS checks for AWS Security Bulletins
 type AWS struct {
-	notifier *notifier.SlackNotifier
+	notifier notifier.Notifier
 }
 
 // NewAWS creates a new AWS checker
-func NewAWS(n *notifier.SlackNotifier) *AWS {
+func NewAWS(n notifier.Notifier) *AWS {
 	return &AWS{notifier: n}
 }
 
