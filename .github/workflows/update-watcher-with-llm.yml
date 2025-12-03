@@ -1,0 +1,97 @@
+name: Update Watcher with Smart Digest
+
+on:
+  schedule:
+    - cron: "0 0 * * *"  # UTC 0時 = JST 9時
+  workflow_dispatch:
+
+jobs:
+  notify-updates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15  # smart-digest 処理分を追加
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+          cache: false
+
+      # smart-digest のセットアップ
+      - name: Setup smart-digest
+        run: |
+          git clone https://github.com/taro33333/smart-digest.git /tmp/smart-digest
+          cd /tmp/smart-digest
+          go build -o /tmp/smart-digest-bin ./cmd/smart-digest
+
+      # config.yaml を生成
+      - name: Create smart-digest config
+        run: |
+          cat > /tmp/smart-digest-config.yaml << 'EOF'
+          llm_provider: "openai"
+          api_key: "${{ secrets.OPENAI_API_KEY }}"
+          model: "gpt-4o-mini"
+          interests:
+            - "Go"
+            - "Rust"
+            - "Kubernetes"
+            - "Security"
+            - "Performance"
+          threshold: 75
+          max_workers: 5
+          rate_limit_per_second: 10
+          EOF
+
+      # update-watcher の出力を smart-digest で処理
+      - name: Run update watcher with smart-digest
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # update-watcher の出力を smart-digest にパイプ
+          go run main.go --json | \
+            /tmp/smart-digest-bin --config /tmp/smart-digest-config.yaml \
+            > /tmp/digest.md
+
+      # 結果がある場合のみ Slack に投稿
+      - name: Post to Slack
+        if: success()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          DIGEST=$(cat /tmp/digest.md)
+          
+          # 結果がある場合のみ投稿
+          if [ -n "$DIGEST" ] && [ "$DIGEST" != "該当する記事はありませんでした。" ]; then
+            # Markdown を JSON エスケープ
+            ESCAPED=$(echo "$DIGEST" | jq -Rs .)
+            
+            curl -X POST "$SLACK_WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              -d "{
+                \"text\": \"📬 今日の重要な更新 (AI分析済み)\",
+                \"blocks\": [
+                  {
+                    \"type\": \"section\",
+                    \"text\": {
+                      \"type\": \"mrkdwn\",
+                      \"text\": $ESCAPED
+                    }
+                  }
+                ]
+              }"
+          else
+            echo "今日は重要な更新なし（閾値: 75点以上）"
+          fi
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d '{"text":"🚨 *Update Watcher が失敗しました*\nワークフローの実行に失敗しました。GitHubのActions タブで詳細を確認してください。\n<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|ワークフロー実行ページ>"}'
