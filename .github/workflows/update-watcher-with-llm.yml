@@ -25,20 +25,20 @@ jobs:
         run: |
           git clone https://github.com/taro33333/smart-digest.git /tmp/smart-digest
           cd /tmp/smart-digest
-          
+
           # デバッグ: ディレクトリ構造を確認
           echo "=== Repository structure ==="
           ls -la
           echo "=== cmd directory ==="
           ls -la cmd/ || echo "cmd directory not found"
-          
+
           # 依存関係を解決
           go mod download
           go mod tidy
-          
+
           # ビルド
           go build -o /tmp/smart-digest-bin ./cmd/smart-digest
-          
+
           # ビルド結果を確認
           ls -lh /tmp/smart-digest-bin
           /tmp/smart-digest-bin --version
@@ -66,6 +66,8 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_SECURITY_WEBHOOK_URL: ${{ secrets.SLACK_SECURITY_WEBHOOK_URL }}
         run: |
           # update-watcher の出力を smart-digest にパイプ
           go run main.go --json | \
@@ -79,12 +81,12 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           DIGEST=$(cat /tmp/digest.md)
-          
+
           # 結果がある場合のみ投稿
           if [ -n "$DIGEST" ] && [ "$DIGEST" != "該当する記事はありませんでした。" ]; then
             # Markdown を JSON エスケープ
             ESCAPED=$(echo "$DIGEST" | jq -Rs .)
-            
+
             curl -X POST "$SLACK_WEBHOOK_URL" \
               -H 'Content-Type: application/json' \
               -d "{
