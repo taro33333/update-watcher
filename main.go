@@ -15,26 +15,35 @@ import (
 
 // App represents the main application
 type App struct {
-	notifier *notifier.SlackNotifier
-	checkers []checker.Named
+	notifier         *notifier.SlackNotifier
+	securityNotifier *notifier.SlackNotifier
+	checkers         []checker.Named
 }
 
 // NewApp creates a new App instance
-func NewApp(webhookURL, githubToken string) *App {
+func NewApp(webhookURL, securityWebhookURL, githubToken string) *App {
 	n := notifier.New(webhookURL)
+
+	// Use dedicated security webhook if provided, otherwise use the same notifier
+	securityN := n
+	if securityWebhookURL != "" && securityWebhookURL != webhookURL {
+		securityN = notifier.New(securityWebhookURL)
+		log.Println("Using dedicated security notification channel")
+	}
 
 	// Checkers are executed in order
 	checkers := []checker.Named{
 		{Name: "GCP Release Notes", Checker: sources.NewGCP(n)},
 		{Name: "Go Releases", Checker: sources.NewGo(n, githubToken)},
 		{Name: "Terraform Releases", Checker: sources.NewTerraform(n, githubToken)},
-		{Name: "Debian Security Advisories", Checker: sources.NewDebian(n)},
-		{Name: "GitHub Security Advisories", Checker: sources.NewGitHub(n, githubToken)},
+		{Name: "Debian Security Advisories", Checker: sources.NewDebian(securityN)},
+		{Name: "GitHub Security Advisories", Checker: sources.NewGitHub(securityN, githubToken)},
 	}
 
 	return &App{
-		notifier: n,
-		checkers: checkers,
+		notifier:         n,
+		securityNotifier: securityN,
+		checkers:         checkers,
 	}
 }
 
@@ -93,11 +102,13 @@ func main() {
 		log.Fatal("SLACK_WEBHOOK_URL environment variable is not set")
 	}
 
+	// Optional: dedicated webhook for security notifications
+	securityWebhookURL := os.Getenv("SLACK_SECURITY_WEBHOOK_URL")
 	githubToken := os.Getenv("GITHUB_TOKEN")
 
 	// Create and run application
 	ctx := context.Background()
-	app := NewApp(webhookURL, githubToken)
+	app := NewApp(webhookURL, securityWebhookURL, githubToken)
 
 	if err := app.Run(ctx); err != nil {
 		log.Fatalf("Application failed: %v", err)
