@@ -9,6 +9,7 @@ const (
 	GCPReleaseNotesURL          = "https://cloud.google.com/feeds/gcp-release-notes.xml"
 	GoReleasesURL               = "https://api.github.com/repos/golang/go/releases"
 	TerraformReleasesURL        = "https://api.github.com/repos/hashicorp/terraform/releases"
+	AWSSecurityBulletinsURL     = "https://aws.amazon.com/security/security-bulletins/rss/feed/"
 	DebianSecurityURL           = "https://www.debian.org/security/dsa-long"
 	GitHubSecurityAdvisoriesURL = "https://api.github.com/advisories"
 )

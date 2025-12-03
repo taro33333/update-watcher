@@ -1,3 +1,5 @@
+// Package checker defines the Checker interface and related types
+// for implementing update checkers.
 package checker
 
 import "context"

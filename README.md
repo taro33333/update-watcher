@@ -14,5 +14,6 @@
 
 ### セキュリティ情報（専用チャンネル対応 🔐）
 
+- ☁️ **AWS Security Bulletins** - AWSのセキュリティ脆弱性情報
 - 🐧 **Debian Security Advisories** - Debianのセキュリティ脆弱性情報
 - 🔐 **GitHub Security Advisories** - GitHub上のセキュリティ脆弱性情報

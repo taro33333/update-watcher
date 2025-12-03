@@ -36,6 +36,7 @@ func NewApp(webhookURL, securityWebhookURL, githubToken string) *App {
 		{Name: "GCP Release Notes", Checker: sources.NewGCP(n)},
 		{Name: "Go Releases", Checker: sources.NewGo(n, githubToken)},
 		{Name: "Terraform Releases", Checker: sources.NewTerraform(n, githubToken)},
+		{Name: "AWS Security Bulletins", Checker: sources.NewAWS(securityN)},
 		{Name: "Debian Security Advisories", Checker: sources.NewDebian(securityN)},
 		{Name: "GitHub Security Advisories", Checker: sources.NewGitHub(securityN, githubToken)},
 	}

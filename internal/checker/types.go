@@ -56,3 +56,24 @@ type RSSItem struct {
 	Date        string `xml:"date"`
 	Description string `xml:"description"`
 }
+
+// RSS2Feed represents an RSS 2.0 feed (used by AWS Security Bulletins)
+type RSS2Feed struct {
+	XMLName xml.Name    `xml:"rss"`
+	Channel RSS2Channel `xml:"channel"`
+}
+
+type RSS2Channel struct {
+	Title       string     `xml:"title"`
+	Link        string     `xml:"link"`
+	Description string     `xml:"description"`
+	Items       []RSS2Item `xml:"item"`
+}
+
+type RSS2Item struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	PubDate     string `xml:"pubDate"`
+	Description string `xml:"description"`
+	GUID        string `xml:"guid"`
+}
