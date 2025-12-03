@@ -57,7 +57,7 @@ type RSSItem struct {
 	Description string `xml:"description"`
 }
 
-// RSS2Feed represents an RSS 2.0 feed (used by AWS Security Bulletins)
+// RSS2Feed represents an RSS 2.0 feed (used by AWS Security Bulletins, Cloudflare)
 type RSS2Feed struct {
 	XMLName xml.Name    `xml:"rss"`
 	Channel RSS2Channel `xml:"channel"`
@@ -71,11 +71,12 @@ type RSS2Channel struct {
 }
 
 type RSS2Item struct {
-	Title       string `xml:"title"`
-	Link        string `xml:"link"`
-	PubDate     string `xml:"pubDate"`
-	Description string `xml:"description"`
-	GUID        string `xml:"guid"`
+	Title       string   `xml:"title"`
+	Link        string   `xml:"link"`
+	PubDate     string   `xml:"pubDate"`
+	Description string   `xml:"description"`
+	GUID        string   `xml:"guid"`
+	Categories  []string `xml:"category"`
 }
 
 // NVDResponse represents the NVD API response
