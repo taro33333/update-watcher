@@ -16,4 +16,5 @@
 
 - ☁️ **AWS Security Bulletins** - AWSのセキュリティ脆弱性情報
 - 🐧 **Debian Security Advisories** - Debianのセキュリティ脆弱性情報
+- 🛡️ **NVD CVE Database** - 国立脆弱性データベース（NVD）のCVE情報
 - 🔐 **GitHub Security Advisories** - GitHub上のセキュリティ脆弱性情報

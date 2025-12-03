@@ -77,3 +77,50 @@ type RSS2Item struct {
 	Description string `xml:"description"`
 	GUID        string `xml:"guid"`
 }
+
+// NVDResponse represents the NVD API response
+type NVDResponse struct {
+	ResultsPerPage  int                `json:"resultsPerPage"`
+	StartIndex      int                `json:"startIndex"`
+	TotalResults    int                `json:"totalResults"`
+	Vulnerabilities []NVDVulnerability `json:"vulnerabilities"`
+}
+
+type NVDVulnerability struct {
+	CVE NVDCVE `json:"cve"`
+}
+
+type NVDCVE struct {
+	ID           string           `json:"id"`
+	Published    string           `json:"published"`
+	LastModified string           `json:"lastModified"`
+	Descriptions []NVDDescription `json:"descriptions"`
+	Metrics      NVDMetrics       `json:"metrics"`
+	References   []NVDReference   `json:"references"`
+}
+
+type NVDDescription struct {
+	Lang  string `json:"lang"`
+	Value string `json:"value"`
+}
+
+type NVDMetrics struct {
+	CVSSMetricV31 []NVDCVSSMetric `json:"cvssMetricV31"`
+	CVSSMetricV30 []NVDCVSSMetric `json:"cvssMetricV30"`
+	CVSSMetricV2  []NVDCVSSMetric `json:"cvssMetricV2"`
+}
+
+type NVDCVSSMetric struct {
+	Type         string      `json:"type"`
+	CVSSData     NVDCVSSData `json:"cvssData"`
+	BaseSeverity string      `json:"baseSeverity"`
+}
+
+type NVDCVSSData struct {
+	Version   string  `json:"version"`
+	BaseScore float64 `json:"baseScore"`
+}
+
+type NVDReference struct {
+	URL string `json:"url"`
+}

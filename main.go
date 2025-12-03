@@ -38,6 +38,7 @@ func NewApp(webhookURL, securityWebhookURL, githubToken string) *App {
 		{Name: "Terraform Releases", Checker: sources.NewTerraform(n, githubToken)},
 		{Name: "AWS Security Bulletins", Checker: sources.NewAWS(securityN)},
 		{Name: "Debian Security Advisories", Checker: sources.NewDebian(securityN)},
+		{Name: "NVD CVE Database", Checker: sources.NewNVD(securityN)},
 		{Name: "GitHub Security Advisories", Checker: sources.NewGitHub(securityN, githubToken)},
 	}
 

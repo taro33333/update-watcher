@@ -11,6 +11,7 @@ const (
 	TerraformReleasesURL        = "https://api.github.com/repos/hashicorp/terraform/releases"
 	AWSSecurityBulletinsURL     = "https://aws.amazon.com/security/security-bulletins/rss/feed/"
 	DebianSecurityURL           = "https://www.debian.org/security/dsa-long"
+	NVDCVEURL                   = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 	GitHubSecurityAdvisoriesURL = "https://api.github.com/advisories"
 )
 
