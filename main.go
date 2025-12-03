@@ -18,6 +18,8 @@ import (
 const (
 	gcpReleaseNotesURL          = "https://cloud.google.com/feeds/gcp-release-notes.xml"
 	goReleasesURL               = "https://api.github.com/repos/golang/go/releases"
+	terraformReleasesURL        = "https://api.github.com/repos/hashicorp/terraform/releases"
+	debianSecurityURL           = "https://www.debian.org/security/dsa-long"
 	githubSecurityAdvisoriesURL = "https://api.github.com/advisories"
 
 	checkPeriodHours    = 25 // 過去25時間の更新をチェック（1日1回実行なので余裕を持たせる）
@@ -78,6 +80,26 @@ type GitHubAdvisory struct {
 	Severity    string `json:"severity"`
 	PublishedAt string `json:"published_at"`
 	HTMLURL     string `json:"html_url"`
+}
+
+// RSSFeed represents an RSS 1.0 feed (RDF format used by Debian)
+type RSSFeed struct {
+	XMLName xml.Name   `xml:"RDF"`
+	Channel RSSChannel `xml:"channel"`
+	Items   []RSSItem  `xml:"item"`
+}
+
+type RSSChannel struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	Description string `xml:"description"`
+}
+
+type RSSItem struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	Date        string `xml:"date"`
+	Description string `xml:"description"`
 }
 
 // SlackMessage represents a Slack webhook message
@@ -159,6 +181,7 @@ var supportedDateFormats = []string{
 	time.RFC1123Z,
 	time.RFC1123,
 	"2006-01-02T15:04:05Z",
+	"2006-01-02", // Date only format (used by Debian)
 	"Mon, 02 Jan 2006 15:04:05 -0700",
 	"Mon, 02 Jan 2006 15:04:05 MST",
 }
@@ -455,6 +478,127 @@ func (c *SecurityAdvisoryChecker) formatMessage(updates []string) string {
 		len(updates), strings.Join(updates, "\n\n"))
 }
 
+// TerraformReleaseChecker checks for Terraform releases
+type TerraformReleaseChecker struct {
+	notifier *SlackNotifier
+	token    string
+}
+
+func NewTerraformReleaseChecker(notifier *SlackNotifier, token string) *TerraformReleaseChecker {
+	return &TerraformReleaseChecker{
+		notifier: notifier,
+		token:    token,
+	}
+}
+
+func (c *TerraformReleaseChecker) Check(ctx context.Context) (bool, error) {
+	log.Println("Checking Terraform Releases...")
+
+	data, err := fetchGitHubAPI(ctx, terraformReleasesURL, c.token)
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch Terraform releases: %w", err)
+	}
+
+	var releases []GitHubRelease
+	if err := json.Unmarshal(data, &releases); err != nil {
+		return false, fmt.Errorf("failed to parse Terraform releases: %w", err)
+	}
+
+	recentReleases := c.filterRecentReleases(releases)
+	if len(recentReleases) == 0 {
+		log.Println("No recent Terraform releases found")
+		return false, nil
+	}
+
+	message := c.formatMessage(recentReleases)
+	if err := c.notifier.Notify(ctx, message); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+func (c *TerraformReleaseChecker) filterRecentReleases(releases []GitHubRelease) []string {
+	var updates []string
+	for _, release := range releases {
+		if !isRecent(release.PublishedAt, checkPeriodHours) {
+			continue
+		}
+
+		title := release.Name
+		if title == "" {
+			title = release.TagName
+		}
+
+		body := formatMultilineText(release.Body, maxSummaryLength, maxDescriptionLines)
+		update := fmt.Sprintf("• *%s*\n  %s\n  <%s|詳細を見る>",
+			title, body, release.HTMLURL)
+		updates = append(updates, update)
+	}
+	return updates
+}
+
+func (c *TerraformReleaseChecker) formatMessage(updates []string) string {
+	return fmt.Sprintf("🏗️ *Terraform に新しいリリースがあります！* (%d件)\n\n%s",
+		len(updates), strings.Join(updates, "\n\n"))
+}
+
+// DebianSecurityChecker checks for Debian security advisories
+type DebianSecurityChecker struct {
+	notifier *SlackNotifier
+}
+
+func NewDebianSecurityChecker(notifier *SlackNotifier) *DebianSecurityChecker {
+	return &DebianSecurityChecker{notifier: notifier}
+}
+
+func (c *DebianSecurityChecker) Check(ctx context.Context) (bool, error) {
+	log.Println("Checking Debian Security Advisories...")
+
+	data, err := fetchURL(ctx, debianSecurityURL)
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch Debian security feed: %w", err)
+	}
+
+	var feed RSSFeed
+	if err := xml.Unmarshal(data, &feed); err != nil {
+		return false, fmt.Errorf("failed to parse Debian RSS feed: %w", err)
+	}
+
+	recentAdvisories := c.filterRecentAdvisories(feed.Items)
+	if len(recentAdvisories) == 0 {
+		log.Println("No recent Debian security advisories found")
+		return false, nil
+	}
+
+	message := c.formatMessage(recentAdvisories)
+	if err := c.notifier.Notify(ctx, message); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+func (c *DebianSecurityChecker) filterRecentAdvisories(items []RSSItem) []string {
+	var updates []string
+	for _, item := range items {
+		if !isRecent(item.Date, checkPeriodHours) {
+			continue
+		}
+
+		description := truncateText(item.Description, maxAdvisorySummary)
+		update := fmt.Sprintf("• *%s*\n  %s\n  <%s|詳細を見る>",
+			item.Title, description, item.Link)
+		updates = append(updates, update)
+	}
+	return updates
+}
+
+func (c *DebianSecurityChecker) formatMessage(updates []string) string {
+	return fmt.Sprintf("🐧 *Debian Security Advisories に新しい脆弱性情報があります！* (%d件)\n\n%s",
+		len(updates), strings.Join(updates, "\n\n"))
+}
+
 // ========================================
 // Main Application Logic
 // ========================================
@@ -484,6 +628,8 @@ func NewApp(webhookURL, githubToken string) *App {
 	checkers := []NamedChecker{
 		{Name: "GCP Release Notes", Checker: NewGCPReleaseChecker(notifier)},
 		{Name: "Go Releases", Checker: NewGoReleaseChecker(notifier, githubToken)},
+		{Name: "Terraform Releases", Checker: NewTerraformReleaseChecker(notifier, githubToken)},
+		{Name: "Debian Security Advisories", Checker: NewDebianSecurityChecker(notifier)},
 		{Name: "GitHub Security Advisories", Checker: NewSecurityAdvisoryChecker(notifier, githubToken)},
 	}
 
