@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -13,15 +14,36 @@ import (
 	"time"
 )
 
+// Configuration constants
 const (
-	gcpReleaseNotesRSS          = "https://cloud.google.com/feeds/gcp-release-notes.xml"
-	goReleasesAPI               = "https://api.github.com/repos/golang/go/releases"
-	githubSecurityAdvisoriesAPI = "https://api.github.com/advisories"
-	checkPeriodHours            = 25 // 過去25時間の更新をチェック（1日1回実行なので余裕を持たせる）
+	gcpReleaseNotesURL          = "https://cloud.google.com/feeds/gcp-release-notes.xml"
+	goReleasesURL               = "https://api.github.com/repos/golang/go/releases"
+	githubSecurityAdvisoriesURL = "https://api.github.com/advisories"
+
+	checkPeriodHours    = 25 // 過去25時間の更新をチェック（1日1回実行なので余裕を持たせる）
+	httpTimeout         = 30 * time.Second
+	maxSummaryLength    = 200
+	maxAdvisorySummary  = 150
+	maxDescriptionLines = 3
+	githubAPIPerPage    = 100
 )
 
-// Note: GCP feed URL redirects to https://docs.cloud.google.com/feeds/gcp-release-notes.xml
-// The http.Get will automatically follow redirects
+// Severity emoji mapping
+var severityEmojis = map[string]string{
+	"critical": "🚨",
+	"high":     "❗",
+	"medium":   "⚠️",
+	"low":      "ℹ️",
+}
+
+// Global HTTP client (reused for better performance)
+var httpClient = &http.Client{
+	Timeout: httpTimeout,
+}
+
+// ========================================
+// Domain Models
+// ========================================
 
 // AtomFeed represents an Atom feed structure (GCP uses Atom format)
 type AtomFeed struct {
@@ -40,15 +62,6 @@ type AtomLink struct {
 	Href string `xml:"href,attr"`
 }
 
-// GitHubAdvisory represents a GitHub Security Advisory
-type GitHubAdvisory struct {
-	ID          string `json:"ghsa_id"`
-	Summary     string `json:"summary"`
-	Severity    string `json:"severity"`
-	PublishedAt string `json:"published_at"`
-	HTMLURL     string `json:"html_url"`
-}
-
 // GitHubRelease represents a GitHub Release
 type GitHubRelease struct {
 	TagName     string `json:"tag_name"`
@@ -58,22 +71,186 @@ type GitHubRelease struct {
 	HTMLURL     string `json:"html_url"`
 }
 
+// GitHubAdvisory represents a GitHub Security Advisory
+type GitHubAdvisory struct {
+	ID          string `json:"ghsa_id"`
+	Summary     string `json:"summary"`
+	Severity    string `json:"severity"`
+	PublishedAt string `json:"published_at"`
+	HTMLURL     string `json:"html_url"`
+}
+
+// SlackMessage represents a Slack webhook message
 type SlackMessage struct {
 	Text string `json:"text"`
 }
 
-func notifySlack(msg string) error {
-	webhook := os.Getenv("SLACK_WEBHOOK_URL")
-	if webhook == "" {
-		return fmt.Errorf("SLACK_WEBHOOK_URL not set")
+// UpdateResult represents the result of an update check
+type UpdateResult struct {
+	HasUpdates bool
+	Error      error
+}
+
+// ========================================
+// HTTP Client Utilities
+// ========================================
+
+// fetchURL performs a simple HTTP GET request
+func fetchURL(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	body, err := json.Marshal(SlackMessage{Text: msg})
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch URL: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	return data, nil
+}
+
+// fetchGitHubAPI performs a GitHub API request with authentication
+func fetchGitHubAPI(ctx context.Context, url, token string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if token != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch GitHub API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(data))
+	}
+
+	return data, nil
+}
+
+// ========================================
+// Date Parsing Utilities
+// ========================================
+
+var supportedDateFormats = []string{
+	time.RFC3339,
+	time.RFC1123Z,
+	time.RFC1123,
+	"2006-01-02T15:04:05Z",
+	"Mon, 02 Jan 2006 15:04:05 -0700",
+	"Mon, 02 Jan 2006 15:04:05 MST",
+}
+
+// parseDate attempts to parse a date string using multiple formats
+func parseDate(dateStr string) (time.Time, error) {
+	for _, format := range supportedDateFormats {
+		if t, err := time.Parse(format, dateStr); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("failed to parse date: %s", dateStr)
+}
+
+// isRecent checks if a date is within the specified hours ago
+func isRecent(dateStr string, hoursAgo int) bool {
+	parsedTime, err := parseDate(dateStr)
+	if err != nil {
+		log.Printf("Warning: %v", err)
+		return false
+	}
+
+	cutoff := time.Now().Add(-time.Duration(hoursAgo) * time.Hour)
+	return parsedTime.After(cutoff)
+}
+
+// ========================================
+// Text Formatting Utilities
+// ========================================
+
+// truncateText truncates text to maxLength and adds ellipsis
+func truncateText(text string, maxLength int) string {
+	text = strings.TrimSpace(text)
+	if len(text) <= maxLength {
+		return text
+	}
+	return text[:maxLength] + "..."
+}
+
+// formatMultilineText formats multiline text, limiting to maxLines
+func formatMultilineText(text string, maxLength, maxLines int) string {
+	text = strings.TrimSpace(text)
+	if len(text) > maxLength {
+		text = text[:maxLength] + "..."
+	}
+
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+
+	if len(lines) > maxLines {
+		return strings.Join(lines[:maxLines], "\n") + "..."
+	}
+
+	return text
+}
+
+// getSeverityEmoji returns the emoji for a given severity level
+func getSeverityEmoji(severity string) string {
+	if emoji, ok := severityEmojis[strings.ToLower(severity)]; ok {
+		return emoji
+	}
+	return "⚠️" // default
+}
+
+// ========================================
+// Slack Notification
+// ========================================
+
+// SlackNotifier handles Slack notifications
+type SlackNotifier struct {
+	webhookURL string
+}
+
+// NewSlackNotifier creates a new SlackNotifier
+func NewSlackNotifier(webhookURL string) *SlackNotifier {
+	return &SlackNotifier{webhookURL: webhookURL}
+}
+
+// Notify sends a message to Slack
+func (s *SlackNotifier) Notify(ctx context.Context, message string) error {
+	body, err := json.Marshal(SlackMessage{Text: message})
 	if err != nil {
 		return fmt.Errorf("failed to marshal slack message: %w", err)
 	}
 
-	resp, err := http.Post(webhook, "application/json", bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.webhookURL, bytes.NewBuffer(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to post to slack: %w", err)
 	}
@@ -86,57 +263,23 @@ func notifySlack(msg string) error {
 	return nil
 }
 
-func fetchURL(url string) ([]byte, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch URL: %w", err)
-	}
-	defer resp.Body.Close()
+// ========================================
+// Update Checkers
+// ========================================
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-	return b, nil
+// GCPReleaseChecker checks for GCP release notes updates
+type GCPReleaseChecker struct {
+	notifier *SlackNotifier
 }
 
-func isRecent(dateStr string, hoursAgo int) bool {
-	// Try multiple date formats
-	formats := []string{
-		time.RFC3339,
-		time.RFC1123Z,
-		time.RFC1123,
-		"2006-01-02T15:04:05Z",
-		"Mon, 02 Jan 2006 15:04:05 -0700",
-		"Mon, 02 Jan 2006 15:04:05 MST",
-	}
-
-	var parsedTime time.Time
-	var err error
-
-	for _, format := range formats {
-		parsedTime, err = time.Parse(format, dateStr)
-		if err == nil {
-			break
-		}
-	}
-
-	if err != nil {
-		log.Printf("Warning: failed to parse date '%s': %v", dateStr, err)
-		return false
-	}
-
-	cutoff := time.Now().Add(-time.Duration(hoursAgo) * time.Hour)
-	return parsedTime.After(cutoff)
+func NewGCPReleaseChecker(notifier *SlackNotifier) *GCPReleaseChecker {
+	return &GCPReleaseChecker{notifier: notifier}
 }
 
-func checkGCPReleaseNotes() (bool, error) {
+func (c *GCPReleaseChecker) Check(ctx context.Context) (bool, error) {
 	log.Println("Checking GCP Release Notes...")
-	data, err := fetchURL(gcpReleaseNotesRSS)
+
+	data, err := fetchURL(ctx, gcpReleaseNotesURL)
 	if err != nil {
 		return false, fmt.Errorf("failed to fetch GCP RSS: %w", err)
 	}
@@ -146,238 +289,276 @@ func checkGCPReleaseNotes() (bool, error) {
 		return false, fmt.Errorf("failed to parse GCP Atom feed: %w", err)
 	}
 
-	var recentUpdates []string
-	for _, entry := range feed.Entries {
-		dateStr := entry.Published
-		if entry.Updated != "" {
-			dateStr = entry.Updated
+	recentUpdates := c.filterRecentEntries(feed.Entries)
+	if len(recentUpdates) == 0 {
+		log.Println("No recent GCP updates found")
+		return false, nil
+	}
+
+	message := c.formatMessage(recentUpdates)
+	if err := c.notifier.Notify(ctx, message); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+func (c *GCPReleaseChecker) filterRecentEntries(entries []AtomEntry) []string {
+	var updates []string
+	for _, entry := range entries {
+		dateStr := entry.Updated
+		if dateStr == "" {
+			dateStr = entry.Published
 		}
 
 		if isRecent(dateStr, checkPeriodHours) {
-			summary := strings.TrimSpace(entry.Summary)
-			if len(summary) > 200 {
-				summary = summary[:200] + "..."
-			}
-			recentUpdates = append(recentUpdates, fmt.Sprintf("• *%s*\n  %s\n  <%s|詳細を見る>",
-				entry.Title, summary, entry.Link.Href))
+			summary := truncateText(entry.Summary, maxSummaryLength)
+			update := fmt.Sprintf("• *%s*\n  %s\n  <%s|詳細を見る>",
+				entry.Title, summary, entry.Link.Href)
+			updates = append(updates, update)
 		}
 	}
-
-	if len(recentUpdates) > 0 {
-		msg := fmt.Sprintf("🔥 *GCP Release Notes に新しい更新があります！* (%d件)\n\n%s",
-			len(recentUpdates), strings.Join(recentUpdates, "\n\n"))
-		if err := notifySlack(msg); err != nil {
-			return false, err
-		}
-		return true, nil
-	}
-
-	log.Println("No recent GCP updates found")
-	return false, nil
+	return updates
 }
 
-func checkGoReleases() (bool, error) {
+func (c *GCPReleaseChecker) formatMessage(updates []string) string {
+	return fmt.Sprintf("🔥 *GCP Release Notes に新しい更新があります！* (%d件)\n\n%s",
+		len(updates), strings.Join(updates, "\n\n"))
+}
+
+// GoReleaseChecker checks for Go releases updates
+type GoReleaseChecker struct {
+	notifier *SlackNotifier
+	token    string
+}
+
+func NewGoReleaseChecker(notifier *SlackNotifier, token string) *GoReleaseChecker {
+	return &GoReleaseChecker{
+		notifier: notifier,
+		token:    token,
+	}
+}
+
+func (c *GoReleaseChecker) Check(ctx context.Context) (bool, error) {
 	log.Println("Checking Go Releases...")
 
-	// GitHub Token (optional but recommended for rate limits)
-	token := os.Getenv("GITHUB_TOKEN")
-
-	req, err := http.NewRequest(http.MethodGet, goReleasesAPI, nil)
-	if err != nil {
-		return false, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/vnd.github+json")
-	if token != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	data, err := fetchGitHubAPI(ctx, goReleasesURL, c.token)
 	if err != nil {
 		return false, fmt.Errorf("failed to fetch Go releases: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return false, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
-	}
 
 	var releases []GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+	if err := json.Unmarshal(data, &releases); err != nil {
 		return false, fmt.Errorf("failed to parse Go releases: %w", err)
 	}
 
-	var recentReleases []string
-	for _, release := range releases {
-		if isRecent(release.PublishedAt, checkPeriodHours) {
-			body := strings.TrimSpace(release.Body)
-			if len(body) > 200 {
-				body = body[:200] + "..."
-			}
-			// Remove excessive newlines and format nicely
-			body = strings.ReplaceAll(body, "\r\n", "\n")
-			lines := strings.Split(body, "\n")
-			if len(lines) > 3 {
-				body = strings.Join(lines[:3], "\n") + "..."
-			}
-
-			releaseTitle := release.Name
-			if releaseTitle == "" {
-				releaseTitle = release.TagName
-			}
-
-			recentReleases = append(recentReleases, fmt.Sprintf("• *%s*\n  %s\n  <%s|詳細を見る>",
-				releaseTitle, body, release.HTMLURL))
-		}
+	recentReleases := c.filterRecentReleases(releases)
+	if len(recentReleases) == 0 {
+		log.Println("No recent Go releases found")
+		return false, nil
 	}
 
-	if len(recentReleases) > 0 {
-		msg := fmt.Sprintf("🦫 *Go に新しいリリースがあります！* (%d件)\n\n%s",
-			len(recentReleases), strings.Join(recentReleases, "\n\n"))
-		if err := notifySlack(msg); err != nil {
-			return false, err
-		}
-		return true, nil
+	message := c.formatMessage(recentReleases)
+	if err := c.notifier.Notify(ctx, message); err != nil {
+		return false, err
 	}
 
-	log.Println("No recent Go releases found")
-	return false, nil
+	return true, nil
 }
 
-func checkGitHubSecurityAdvisories() (bool, error) {
+func (c *GoReleaseChecker) filterRecentReleases(releases []GitHubRelease) []string {
+	var updates []string
+	for _, release := range releases {
+		if !isRecent(release.PublishedAt, checkPeriodHours) {
+			continue
+		}
+
+		title := release.Name
+		if title == "" {
+			title = release.TagName
+		}
+
+		body := formatMultilineText(release.Body, maxSummaryLength, maxDescriptionLines)
+		update := fmt.Sprintf("• *%s*\n  %s\n  <%s|詳細を見る>",
+			title, body, release.HTMLURL)
+		updates = append(updates, update)
+	}
+	return updates
+}
+
+func (c *GoReleaseChecker) formatMessage(updates []string) string {
+	return fmt.Sprintf("🦫 *Go に新しいリリースがあります！* (%d件)\n\n%s",
+		len(updates), strings.Join(updates, "\n\n"))
+}
+
+// SecurityAdvisoryChecker checks for GitHub Security Advisories
+type SecurityAdvisoryChecker struct {
+	notifier *SlackNotifier
+	token    string
+}
+
+func NewSecurityAdvisoryChecker(notifier *SlackNotifier, token string) *SecurityAdvisoryChecker {
+	return &SecurityAdvisoryChecker{
+		notifier: notifier,
+		token:    token,
+	}
+}
+
+func (c *SecurityAdvisoryChecker) Check(ctx context.Context) (bool, error) {
 	log.Println("Checking GitHub Security Advisories...")
 
-	// GitHub Token (optional but recommended for rate limits)
-	token := os.Getenv("GITHUB_TOKEN")
+	url := fmt.Sprintf("%s?per_page=%d&sort=published&direction=desc",
+		githubSecurityAdvisoriesURL, githubAPIPerPage)
 
-	// Get advisories from the last day
-	url := fmt.Sprintf("%s?per_page=100&sort=published&direction=desc", githubSecurityAdvisoriesAPI)
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return false, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/vnd.github+json")
-	if token != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	data, err := fetchGitHubAPI(ctx, url, c.token)
 	if err != nil {
 		return false, fmt.Errorf("failed to fetch advisories: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return false, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
-	}
 
 	var advisories []GitHubAdvisory
-	if err := json.NewDecoder(resp.Body).Decode(&advisories); err != nil {
+	if err := json.Unmarshal(data, &advisories); err != nil {
 		return false, fmt.Errorf("failed to parse advisories: %w", err)
 	}
 
-	var recentAdvisories []string
-	for _, advisory := range advisories {
-		if isRecent(advisory.PublishedAt, checkPeriodHours) {
-			severityEmoji := "⚠️"
-			switch strings.ToLower(advisory.Severity) {
-			case "critical":
-				severityEmoji = "🚨"
-			case "high":
-				severityEmoji = "❗"
-			case "medium":
-				severityEmoji = "⚠️"
-			case "low":
-				severityEmoji = "ℹ️"
-			}
-
-			summary := strings.TrimSpace(advisory.Summary)
-			if len(summary) > 150 {
-				summary = summary[:150] + "..."
-			}
-
-			recentAdvisories = append(recentAdvisories, fmt.Sprintf("%s *[%s]* %s\n  <%s|%s>",
-				severityEmoji, strings.ToUpper(advisory.Severity), summary, advisory.HTMLURL, advisory.ID))
-		}
+	recentAdvisories := c.filterRecentAdvisories(advisories)
+	if len(recentAdvisories) == 0 {
+		log.Println("No recent security advisories found")
+		return false, nil
 	}
 
-	if len(recentAdvisories) > 0 {
-		msg := fmt.Sprintf("🔐 *GitHub Security Advisories に新しい脆弱性情報があります！* (%d件)\n\n%s",
-			len(recentAdvisories), strings.Join(recentAdvisories, "\n\n"))
-		if err := notifySlack(msg); err != nil {
-			return false, err
-		}
-		return true, nil
+	message := c.formatMessage(recentAdvisories)
+	if err := c.notifier.Notify(ctx, message); err != nil {
+		return false, err
 	}
 
-	log.Println("No recent security advisories found")
-	return false, nil
+	return true, nil
 }
 
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Println("Starting update watcher...")
+func (c *SecurityAdvisoryChecker) filterRecentAdvisories(advisories []GitHubAdvisory) []string {
+	var updates []string
+	for _, advisory := range advisories {
+		if !isRecent(advisory.PublishedAt, checkPeriodHours) {
+			continue
+		}
 
-	now := time.Now().Format("2006-01-02 15:04:05 MST")
-
-	// Check if Slack webhook is configured
-	if os.Getenv("SLACK_WEBHOOK_URL") == "" {
-		log.Fatal("SLACK_WEBHOOK_URL environment variable is not set")
+		emoji := getSeverityEmoji(advisory.Severity)
+		summary := truncateText(advisory.Summary, maxAdvisorySummary)
+		update := fmt.Sprintf("%s *[%s]* %s\n  <%s|%s>",
+			emoji, strings.ToUpper(advisory.Severity), summary, advisory.HTMLURL, advisory.ID)
+		updates = append(updates, update)
 	}
+	return updates
+}
+
+func (c *SecurityAdvisoryChecker) formatMessage(updates []string) string {
+	return fmt.Sprintf("🔐 *GitHub Security Advisories に新しい脆弱性情報があります！* (%d件)\n\n%s",
+		len(updates), strings.Join(updates, "\n\n"))
+}
+
+// ========================================
+// Main Application Logic
+// ========================================
+
+// Checker represents an update checker
+type Checker interface {
+	Check(ctx context.Context) (bool, error)
+}
+
+// NamedChecker represents a checker with a name
+type NamedChecker struct {
+	Name    string
+	Checker Checker
+}
+
+// App represents the main application
+type App struct {
+	notifier *SlackNotifier
+	checkers []NamedChecker
+}
+
+// NewApp creates a new App instance
+func NewApp(webhookURL, githubToken string) *App {
+	notifier := NewSlackNotifier(webhookURL)
+
+	// Checkers are executed in order
+	checkers := []NamedChecker{
+		{Name: "GCP Release Notes", Checker: NewGCPReleaseChecker(notifier)},
+		{Name: "Go Releases", Checker: NewGoReleaseChecker(notifier, githubToken)},
+		{Name: "GitHub Security Advisories", Checker: NewSecurityAdvisoryChecker(notifier, githubToken)},
+	}
+
+	return &App{
+		notifier: notifier,
+		checkers: checkers,
+	}
+}
+
+// Run executes all update checks
+func (a *App) Run(ctx context.Context) error {
+	log.Println("Starting update watcher...")
 
 	var errors []string
 	hasUpdates := false
 
-	// 1. Check GCP Release Notes
-	if updated, err := checkGCPReleaseNotes(); err != nil {
-		log.Printf("Error checking GCP: %v", err)
-		errors = append(errors, fmt.Sprintf("❌ GCP Release Notes: %v", err))
-	} else if updated {
-		hasUpdates = true
+	// Run all checkers in order
+	for _, nc := range a.checkers {
+		updated, err := nc.Checker.Check(ctx)
+		if err != nil {
+			log.Printf("Error checking %s: %v", nc.Name, err)
+			errors = append(errors, fmt.Sprintf("❌ %s: %v", nc.Name, err))
+		} else if updated {
+			hasUpdates = true
+		}
 	}
 
-	// 2. Check Go Releases
-	if updated, err := checkGoReleases(); err != nil {
-		log.Printf("Error checking Go: %v", err)
-		errors = append(errors, fmt.Sprintf("❌ Go Releases: %v", err))
-	} else if updated {
-		hasUpdates = true
-	}
-
-	// 3. Check GitHub Security Advisories
-	if updated, err := checkGitHubSecurityAdvisories(); err != nil {
-		log.Printf("Error checking GitHub: %v", err)
-		errors = append(errors, fmt.Sprintf("❌ GitHub Security Advisories: %v", err))
-	} else if updated {
-		hasUpdates = true
-	}
-
-	// Send summary message
-	if len(errors) > 0 {
-		errMsg := fmt.Sprintf("⚠️ *アップデート監視完了（一部エラーあり）* - %s\n\n%s",
-			now, strings.Join(errors, "\n"))
-		if err := notifySlack(errMsg); err != nil {
-			log.Printf("Failed to send error notification: %v", err)
-		}
-	} else if !hasUpdates {
-		summaryMsg := fmt.Sprintf("✅ *アップデート監視完了* - %s\n新しい更新はありませんでした。",
-			now)
-		if err := notifySlack(summaryMsg); err != nil {
-			log.Printf("Failed to send summary: %v", err)
-		}
-	} else {
-		summaryMsg := fmt.Sprintf("✅ *アップデート監視完了* - %s\n上記の更新を確認してください。",
-			now)
-		if err := notifySlack(summaryMsg); err != nil {
-			log.Printf("Failed to send summary: %v", err)
-		}
+	// Send summary notification
+	if err := a.sendSummary(ctx, errors, hasUpdates); err != nil {
+		log.Printf("Failed to send summary: %v", err)
+		return err
 	}
 
 	log.Println("Update watcher completed successfully")
+	return nil
+}
+
+// sendSummary sends a summary notification based on results
+func (a *App) sendSummary(ctx context.Context, errors []string, hasUpdates bool) error {
+	now := time.Now().Format("2006-01-02 15:04:05 MST")
+
+	var message string
+	switch {
+	case len(errors) > 0:
+		message = fmt.Sprintf("⚠️ *アップデート監視完了（一部エラーあり）* - %s\n\n%s",
+			now, strings.Join(errors, "\n"))
+	case !hasUpdates:
+		message = fmt.Sprintf("✅ *アップデート監視完了* - %s\n新しい更新はありませんでした。", now)
+	default:
+		message = fmt.Sprintf("✅ *アップデート監視完了* - %s\n上記の更新を確認してください。", now)
+	}
+
+	return a.notifier.Notify(ctx, message)
+}
+
+// ========================================
+// Main Entry Point
+// ========================================
+
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	// Validate environment variables
+	webhookURL := os.Getenv("SLACK_WEBHOOK_URL")
+	if webhookURL == "" {
+		log.Fatal("SLACK_WEBHOOK_URL environment variable is not set")
+	}
+
+	githubToken := os.Getenv("GITHUB_TOKEN")
+
+	// Create and run application
+	ctx := context.Background()
+	app := NewApp(webhookURL, githubToken)
+
+	if err := app.Run(ctx); err != nil {
+		log.Fatalf("Application failed: %v", err)
+	}
 }
