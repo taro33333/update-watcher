@@ -1,0 +1,40 @@
+name: Update Watcher
+
+on:
+  schedule:
+    - cron: "0 0 * * *"  # UTC 0時 = JST 9時
+  workflow_dispatch:
+
+jobs:
+  notify-updates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run update watcher
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          go run main.go
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d '{"text":"🚨 *Update Watcher が失敗しました*\nワークフローの実行に失敗しました。GitHubのActions タブで詳細を確認してください。\n<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|ワークフロー実行ページ>"}'
