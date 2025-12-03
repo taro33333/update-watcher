@@ -146,7 +146,7 @@ jobs:
       - name: Post to Slack
         if: success()
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          AI_SLACK_WEBHOOK_URL: ${{ secrets.AI_SLACK_WEBHOOK_URL }}
         run: |
           if [ ! -f /tmp/digest.md ] || [ ! -s /tmp/digest.md ]; then
             echo "No digest to post"
@@ -157,7 +157,7 @@ jobs:
 
           # 該当記事なしチェック
           if echo "$DIGEST" | grep -q "該当する記事はありませんでした\|新しい更新がありませんでした"; then
-            curl -X POST "$SLACK_WEBHOOK_URL" \
+            curl -X POST "$AI_SLACK_WEBHOOK_URL" \
               -H 'Content-Type: application/json' \
               -d '{"text":"📭 今日の重要な更新はありません（閾値: 70点以上）"}'
             exit 0
@@ -171,7 +171,7 @@ jobs:
 
           ESCAPED=$(echo "$DIGEST_TRUNCATED" | jq -Rs .)
 
-          curl -X POST "$SLACK_WEBHOOK_URL" \
+          curl -X POST "$AI_SLACK_WEBHOOK_URL" \
             -H 'Content-Type: application/json' \
             -d "{
               \"text\": \"📬 今日の重要な更新 (AI分析済み - Ollama)\",
@@ -189,8 +189,8 @@ jobs:
       - name: Notify on failure
         if: failure()
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          AI_SLACK_WEBHOOK_URL: ${{ secrets.AI_SLACK_WEBHOOK_URL }}
         run: |
-          curl -X POST "$SLACK_WEBHOOK_URL" \
+          curl -X POST "$AI_SLACK_WEBHOOK_URL" \
             -H 'Content-Type: application/json' \
             -d '{"text":"🚨 *Update Watcher が失敗しました*\nワークフローの実行に失敗しました。GitHubのActions タブで詳細を確認してください。\n<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|ワークフロー実行ページ>"}'
