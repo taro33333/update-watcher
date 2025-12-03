@@ -14,27 +14,14 @@ import (
 )
 
 const (
-	gcpReleaseNotesRSS          = "https://cloud.google.com/feeds/release-notes.xml"
-	goReleasesRSS               = "https://go.dev/doc/devel/release.rss"
+	gcpReleaseNotesRSS          = "https://cloud.google.com/feeds/gcp-release-notes.xml"
+	goReleasesAPI               = "https://api.github.com/repos/golang/go/releases"
 	githubSecurityAdvisoriesAPI = "https://api.github.com/advisories"
 	checkPeriodHours            = 25 // 過去25時間の更新をチェック（1日1回実行なので余裕を持たせる）
 )
 
-// RSS Feed structures
-type RSS struct {
-	Channel Channel `xml:"channel"`
-}
-
-type Channel struct {
-	Items []Item `xml:"item"`
-}
-
-type Item struct {
-	Title       string `xml:"title"`
-	Link        string `xml:"link"`
-	PubDate     string `xml:"pubDate"`
-	Description string `xml:"description"`
-}
+// Note: GCP feed URL redirects to https://docs.cloud.google.com/feeds/gcp-release-notes.xml
+// The http.Get will automatically follow redirects
 
 // AtomFeed represents an Atom feed structure (GCP uses Atom format)
 type AtomFeed struct {
@@ -58,6 +45,15 @@ type GitHubAdvisory struct {
 	ID          string `json:"ghsa_id"`
 	Summary     string `json:"summary"`
 	Severity    string `json:"severity"`
+	PublishedAt string `json:"published_at"`
+	HTMLURL     string `json:"html_url"`
+}
+
+// GitHubRelease represents a GitHub Release
+type GitHubRelease struct {
+	TagName     string `json:"tag_name"`
+	Name        string `json:"name"`
+	Body        string `json:"body"`
 	PublishedAt string `json:"published_at"`
 	HTMLURL     string `json:"html_url"`
 }
@@ -182,25 +178,58 @@ func checkGCPReleaseNotes() (bool, error) {
 
 func checkGoReleases() (bool, error) {
 	log.Println("Checking Go Releases...")
-	data, err := fetchURL(goReleasesRSS)
+
+	// GitHub Token (optional but recommended for rate limits)
+	token := os.Getenv("GITHUB_TOKEN")
+
+	req, err := http.NewRequest(http.MethodGet, goReleasesAPI, nil)
 	if err != nil {
-		return false, fmt.Errorf("failed to fetch Go RSS: %w", err)
+		return false, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	var rss RSS
-	if err := xml.Unmarshal(data, &rss); err != nil {
-		return false, fmt.Errorf("failed to parse Go RSS: %w", err)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if token != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch Go releases: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var releases []GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return false, fmt.Errorf("failed to parse Go releases: %w", err)
 	}
 
 	var recentReleases []string
-	for _, item := range rss.Channel.Items {
-		if isRecent(item.PubDate, checkPeriodHours) {
-			desc := strings.TrimSpace(item.Description)
-			if len(desc) > 200 {
-				desc = desc[:200] + "..."
+	for _, release := range releases {
+		if isRecent(release.PublishedAt, checkPeriodHours) {
+			body := strings.TrimSpace(release.Body)
+			if len(body) > 200 {
+				body = body[:200] + "..."
 			}
+			// Remove excessive newlines and format nicely
+			body = strings.ReplaceAll(body, "\r\n", "\n")
+			lines := strings.Split(body, "\n")
+			if len(lines) > 3 {
+				body = strings.Join(lines[:3], "\n") + "..."
+			}
+
+			releaseTitle := release.Name
+			if releaseTitle == "" {
+				releaseTitle = release.TagName
+			}
+
 			recentReleases = append(recentReleases, fmt.Sprintf("• *%s*\n  %s\n  <%s|詳細を見る>",
-				item.Title, desc, item.Link))
+				releaseTitle, body, release.HTMLURL))
 		}
 	}
 
